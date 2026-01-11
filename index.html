@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SDF Studio | Optimized</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #020617;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #status {
+      transition: all 0.3s ease;
+    }
+    </style>
+</head>
+<body class="text-slate-200">
+
+<div id="ui" class="absolute top-6 left-6 w-96 bg-slate-900/90 backdrop-blur-md border border-slate-700 p-6 rounded-2xl shadow-2xl z-10 space-y-6">
+  <header class="flex items-center justify-between">
+    <div>
+      <h1 class="text-xs font-black tracking-widest text-emerald-400 uppercase">Десмос дома</h1>
+      <div id="status" class="text-base text-emerald-500/50 mt-1 uppercase tracking-tighter">Ready</div>
+    </div>
+    <span id="statusDot" class="flex h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]"></span>
+  </header>
+
+    <section>
+        <label class="text-base uppercase tracking-wider text-slate-400 font-bold">Базовые формы</label>
+        <div class="grid grid-cols-3 gap-2 mt-2">
+            <button onclick="setFormula('sphere')"
+                    class="bg-slate-800 hover:bg-slate-700 border border-slate-700 py-2 rounded-lg text-sm transition-colors">
+                Сфера
+            </button>
+            <button onclick="setFormula('box')"
+                    class="bg-slate-800 hover:bg-slate-700 border border-slate-700 py-2 rounded-lg text-sm transition-colors">
+                Куб
+            </button>
+            <button onclick="setFormula('torus')"
+                    class="bg-slate-800 hover:bg-slate-700 border border-slate-700 py-2 rounded-lg text-sm transition-colors">
+                Тор
+            </button>
+        </div>
+    </section>
+
+    <section>
+        <label class="text-base uppercase tracking-wider text-slate-400 font-bold">Математическое уравнение</label>
+        <textarea id="formulaInput" spellcheck="false"
+                  class="w-full h-32 mt-2 bg-black border border-slate-700 rounded-lg p-3 font-mono text-sm text-emerald-300 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all resize-y"
+        >return length(p) - 1.2;</textarea>
+        <div id="errorLog"
+             class="hidden mt-2 text-sm text-rose-400 font-mono p-2 bg-rose-500/10 border border-rose-500/20 rounded">
+            Ошибка компиляции шейдера
+        </div>
+    </section>
+</div>
+
+<script type="module">
+  import * as THREE from 'https://cdn.skypack.dev/three@0.136.0';
+
+  const presets = {
+    sphere: "return length(p) - 0.6;",
+    box: "vec3 d = abs(p) - 0.4;\nreturn length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);",
+    torus: "vec2 q = vec2(length(p.xz) - 0.5, p.y);\nreturn length(q) - 0.15;",
+  };
+
+  const statusEl = document.getElementById('status');
+  const statusDot = document.getElementById('statusDot');
+  const errorLog = document.getElementById('errorLog');
+
+  window.setFormula = (type) => {
+    const input = document.getElementById('formulaInput');
+    input.value = presets[type];
+    handleInput();
+  };
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const renderer = new THREE.WebGLRenderer({antialias: true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const vertexShader = `void main() { gl_Position = vec4(position, 1.0); }`;
+
+  function createFragmentShader(formula) {
+    return `
+                uniform float iTime;
+                uniform vec2 iResolution;
+                float map(vec3 p) {
+                    float a = iTime * 0.2;
+                    mat2 rot = mat2(cos(a), -sin(a), sin(a), cos(a));
+                    p.xz *= rot; p.xy *= rot;
+                    ${formula}
+                }
+                vec3 getNormal(vec3 p) {
+                    vec2 e = vec2(0.001, 0);
+                    return normalize(vec3(map(p+e.xyy)-map(p-e.xyy), map(p+e.yxy)-map(p-e.yxy), map(p+e.yyx)-map(p-e.yyx)));
+                }
+                float getShadow(vec3 ro, vec3 rd) {
+                    float res = 1.0; float t = 0.01;
+                    for(int i=0; i<32; i++) {
+                        float h = map(ro + rd * t);
+                        res = min(res, 8.0 * h / t);
+                        t += clamp(h, 0.02, 0.2);
+                        if(h < 0.001 || t > 5.0) break;
+                    }
+                    return clamp(res, 0.0, 1.0);
+                }
+                void main() {
+                    vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+                    vec3 ro = vec3(0, 0, -3.5); vec3 rd = normalize(vec3(uv, 1.5));
+                    float t = 0.0;
+                    for(int i=0; i<80; i++) {
+                        float d = map(ro + rd * t);
+                        if(d < 0.001 || t > 10.0) break;
+                        t += d;
+                    }
+                    vec3 color = vec3(0.01, 0.02, 0.04);
+                    if(t < 10.0) {
+                        vec3 p = ro + rd * t; vec3 n = getNormal(p);
+                        vec3 l = normalize(vec3(2, 3, -3));
+                        float s = getShadow(p + n * 0.01, l);
+                        float diff = max(dot(n, l), 0.0) * s;
+                        color = (n*0.5+0.5) * (diff + 0.05) + pow(max(dot(reflect(-l, n), -rd), 0.0), 32.0) * s * 0.4;
+                    }
+                    gl_FragColor = vec4(pow(color * (1.0 - length(uv)*0.5), vec3(0.85)), 1.0);
+                }
+            `;
+  }
+
+  let uniforms = {iTime: {value: 0}, iResolution: {value: new THREE.Vector2()}};
+  let material = new THREE.ShaderMaterial({
+    vertexShader,
+    fragmentShader: createFragmentShader(presets.sphere),
+    uniforms
+  });
+  let mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+  scene.add(mesh);
+
+  let timeout;
+
+  function handleInput() {
+    statusEl.innerText = "Typing...";
+    statusDot.className = "flex h-2 w-2 rounded-full bg-yellow-500 shadow-[0_0_8px_#eab308]";
+
+    clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      try {
+        const newMat = new THREE.ShaderMaterial({
+          vertexShader,
+          fragmentShader: createFragmentShader(document.getElementById('formulaInput').value),
+          uniforms
+        });
+        renderer.compile(scene, camera);
+        mesh.material.dispose();
+        mesh.material = newMat;
+
+        errorLog.classList.add('hidden');
+        statusEl.innerText = "Compiled Successfully";
+        statusDot.className = "flex h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
+      } catch (e) {
+        errorLog.classList.remove('hidden');
+        statusEl.innerText = "Error";
+        statusDot.className = "flex h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]";
+      }
+    }, 300);
+  }
+
+  document.getElementById('formulaInput').addEventListener('input', handleInput);
+
+  function resize() {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    uniforms.iResolution.value.set(window.innerWidth, window.innerHeight);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+
+  function animate(t) {
+    uniforms.iTime.value = t * 0.001;
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+
+  requestAnimationFrame(animate);
+</script>
+</body>
+</html>
